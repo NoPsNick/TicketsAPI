@@ -1,0 +1,87 @@
+### Criar o primeiro usuário
+POST http://localhost:8000/apis/registrar/
+Content-Type: application/json
+
+{
+  "username": "user1",
+  "email": "user1@example.com",
+  "password": "password123"
+}
+
+### Criar o segundo usuário
+POST http://localhost:8000/apis/registrar/
+Content-Type: application/json
+
+{
+  "username": "user2",
+  "email": "user2@example.com",
+  "password": "password123"
+}
+
+### Autenticar o primeiro usuário (Login)
+POST http://localhost:8000/apis/login/
+Content-Type: application/json
+
+{
+  "username": "user1",
+  "password": "password123"
+}
+
+### Autenticar o segundo usuário (Login)
+POST http://localhost:8000/apis/login/
+Content-Type: application/json
+
+{
+  "username": "user2",
+  "password": "password123"
+}
+
+### Refresh do token do primeiro usuário
+@REFRESH_TOKEN = value
+POST http://localhost:8000/apis/token/refresh/
+Content-Type: application/json
+
+{
+  "refresh": "{{REFRESH_TOKEN}}"
+}
+
+### Verificar o usuário logado
+GET http://localhost:8000/apis/usuarios/
+Authorization: Bearer {{ACCESS_TOKEN}}
+
+### Listar usuários
+GET http://localhost:8000/apis/usuarios/
+Authorization: Bearer {{ACCESS_TOKEN}}
+
+### Criar um chamado do primeiro usuário para o segundo
+POST http://localhost:8000/apis/chamados/criar/
+Content-Type: application/json
+Authorization: Bearer {{ACCESS_TOKEN}}
+
+{
+  "title": "Chamado de teste",
+  "description": "Este é um chamado de teste.",
+  "receiver": 2
+}
+
+### O segundo usuário responde ao chamado
+@ACCESS_TOKEN2 = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzMzNTAyMDIxLCJpYXQiOjE3MzM1MDE2NzgsImp0aSI6ImZhYjQyNzZiMGQyZTQ0ZjhhZDAxYzE2YjllMTU2NDk5IiwidXNlcl9pZCI6Mn0.QRxIVd7j-tEAjUwKICOyVfK6HwbH8jBytz2juTvFMjk
+POST http://localhost:8000/apis/chamados/1/responder/
+Content-Type: application/json
+Authorization: Bearer {{ACCESS_TOKEN2}}  # Substitua pelo token do segundo usuário
+
+{
+  "content": "Resposta ao chamado de teste."
+}
+
+### Listar chamados enviados pelo primeiro usuário
+GET http://localhost:8000/apis/chamados/enviados/
+Authorization: Bearer {{ACCESS_TOKEN}}  # Substitua pelo token do primeiro usuário
+
+### Listar chamados recebidos pelo segundo usuário
+GET http://localhost:8000/apis/chamados/recebidos/
+Authorization: Bearer {{ACCESS_TOKEN2}}  # Substitua pelo token do segundo usuário
+
+### Pegar respostas de um chamado
+GET http://localhost:8000/apis/chamados/1/respostas/
+Authorization: Bearer {{ACCESS_TOKEN}}  # Substitua pelo token do primeiro ou do segundo usuário
