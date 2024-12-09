@@ -33,6 +33,7 @@ class TicketSerializer(serializers.ModelSerializer):
     class Meta:
         model = Ticket
         fields = ['title', 'description', 'receiver', 'status']
+        read_only_fields = ['receiver']
         extra_kwargs = {
             'status': {'default': Ticket.STATUS_PENDING, 'read_only': True}
         }
@@ -43,7 +44,7 @@ class TicketSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class ResponseSerializer(serializers.ModelSerializer):
+class TicketResponseSerializer(serializers.ModelSerializer):
     class Meta:
         model = TicketResponse
         fields = ['id', 'ticket', 'responder', 'content', 'created_at']
@@ -51,11 +52,12 @@ class ResponseSerializer(serializers.ModelSerializer):
 
 
 class TicketListSerializer(serializers.ModelSerializer):
-    responses = ResponseSerializer(many=True, read_only=True)
+    responses = TicketResponseSerializer(many=True, read_only=True)
 
     class Meta:
         model = Ticket
         fields = ['id', 'title', 'description', 'sender', 'receiver', 'status', 'created_at', 'responses']
+        read_only_fields = ['id', 'sender', 'receiver', 'status', 'created_at']
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -64,3 +66,4 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'date_joined', 'is_staff', 'is_active', 'is_superuser', 'sector']
+        read_only_fields = ['id', 'username', 'email', 'date_joined', 'is_staff', 'is_active', 'is_superuser']

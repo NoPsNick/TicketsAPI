@@ -5,19 +5,29 @@ User = get_user_model()
 
 
 class Ticket(models.Model):
-    pending, read, closed = 'pending', 'read', 'closed'
-    status_choices = [
-        (pending, 'Pendente'),
-        (read, 'Lido'),
-        (closed, 'Finalizado')
+    STATUS_PENDING = 'pending'
+    STATUS_READ = 'read'
+    STATUS_CLOSED = 'closed'
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pendente'),
+        (STATUS_READ, 'Lido'),
+        (STATUS_CLOSED, 'Finalizado')
     ]
 
     title = models.CharField(max_length=255)
     description = models.TextField()
     sender = models.ForeignKey(User, related_name='sent_tickets', on_delete=models.CASCADE)
     receiver = models.ForeignKey(User, related_name='received_tickets', on_delete=models.CASCADE)
-    status = models.CharField(max_length=50, choices=status_choices, default=pending)
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default=STATUS_PENDING)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    @classmethod
+    def get_status_display_dict(cls):
+        """
+        Retorna um dicionário para mapear os status de exibição para valores internos.
+        """
+        return {display: value for value, display in cls.STATUS_CHOICES}
 
 
 class TicketResponse(models.Model):
