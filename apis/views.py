@@ -1,7 +1,8 @@
 from typing import Callable, List, Optional
 
 from django.contrib.auth import get_user_model
-from rest_framework.exceptions import ValidationError
+from django.db.models import Prefetch
+from rest_framework.exceptions import ValidationError, NotFound
 from rest_framework.generics import get_object_or_404
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -14,34 +15,11 @@ from rest_framework.permissions import IsAuthenticated
 
 from apis.serializers import RegisterSerializer, TicketSerializer, TicketListSerializer, TicketResponseSerializer, \
     UserSerializer
-from tickets.models import Ticket, TicketResponse
+from tickets.models import Ticket, TicketResponse, TicketReceiver
 from users.models import Sector
 from users.serializers import SectorSerializer
 
 User = get_user_model()
-
-
-def change_ticket_status(ticket, new_status):
-    """
-    Atualiza a situação de um ticket, se necessário.
-    """
-    status_dict = Ticket.get_status_display_dict()
-
-    # Verificar se o novo status é válido
-    if new_status not in status_dict:
-        valid_statuses = ", ".join(status_dict.keys())
-        raise ValidationError({
-            "status": f"'{new_status}' não é um status válido. Status válidos: {valid_statuses}."
-        })
-
-    # Verificar se o status já está atualizado
-    if ticket.status == status_dict[new_status]:
-        return ticket
-
-    # Atualizar o status do ticket
-    ticket.status = status_dict[new_status]
-    ticket.save(update_fields=['status'])
-    return ticket
 
 
 class BaseView(APIView):
@@ -52,23 +30,53 @@ class BaseView(APIView):
     permission_classes = [IsAuthenticated]
 
     @staticmethod
+    def get_allowed_users(ticket, only_sender = False):
+        """
+        Retorna os IDs dos usuários que enviaram ou receberam o ticket.
+
+        ### Parâmetros:
+        - `ticket`: Instância do ticket.
+
+        ### Retornos:
+        - Lista de IDs de usuários permitidos.
+        """
+        sent = ticket.sender
+        if not only_sender:
+            receivers = TicketReceiver.objects.filter(ticket=ticket).select_related('user').distinct()
+            allowed_users = [sent.pk] + [rec.user.pk for rec in receivers]
+        else:
+            allowed_users = [sent.pk]
+        return allowed_users
+
+    @staticmethod
     def get_user_tickets(user, role):
         """
         Retorna os tickets relacionados a um usuário, seja como remetente ou destinatário.
 
         ### Parâmetros:
-        - `user`: Instância do usuário solicitante.
+        - `user` (User): Instância do usuário solicitante.
         - `role` (str): "sent" para tickets enviados ou "received" para tickets recebidos.
 
         ### Retornos:
         - Queryset de tickets filtrados conforme o papel do usuário.
         """
+        # Tickets para staff ou superusuários (acesso completo)
         if user.is_staff or user.is_superuser:
-            return Ticket.objects.all()
+            return Ticket.objects.all().select_related('sender', 'last_status_changed_by'
+                                                       ).prefetch_related('receivers', 'responses')
+
+        # Tickets enviados pelo usuário
         if role == "sent":
-            return Ticket.objects.filter(sender=user)
+            return Ticket.objects.filter(sender=user).select_related('last_status_changed_by'
+                                                                     ).prefetch_related('receivers', 'responses')
+
+        # Tickets recebidos pelo usuário
         if role == "received":
-            return Ticket.objects.filter(receiver=user)
+            return Ticket.objects.filter(ticketreceiver__user=user
+                                         ).select_related('sender', 'last_status_changed_by'
+                                                          ).prefetch_related('receivers', 'responses').distinct()
+
+        # Nenhum ticket retornado para outros casos
         return Ticket.objects.none()
 
     @staticmethod
@@ -144,7 +152,7 @@ class BaseView(APIView):
             try:
                 return User.objects.get(id=leader_id)
             except User.DoesNotExist:
-                raise ValidationError({"leader": "Usuário líder informado não existe."})
+                raise ValidationError({"leader_id": "Usuário líder informado não existe."})
         return None
 
     def get_sector_infos_from_request(self, request, is_update=False) -> dict:
@@ -169,6 +177,30 @@ class BaseView(APIView):
         # Retorna apenas os campos que têm valores, excluindo None
         return sector if not is_update else {key: value for key, value in sector.items() if value is not None}
 
+    @staticmethod
+    def change_ticket_status(ticket, user, new_status):
+        """
+        Atualiza a situação de um ticket para um destinatário específico.
+        """
+        status_dict = Ticket.get_status_display_dict()
+
+        # Verificar se o novo status é válido
+        if new_status not in status_dict:
+            valid_statuses = ", ".join(status_dict.keys())
+            raise ValidationError({
+                "status": f"'{new_status}' não é um status válido. Status válidos: {valid_statuses}."
+            })
+
+        # Verificar se o status já está atualizado
+        if ticket.status == status_dict[new_status]:
+            return ticket
+
+        # Atualizar o status do chamado
+        ticket.status = status_dict[new_status]
+        ticket.last_status_changed_by = user
+        ticket.save(update_fields=['status', 'last_status_changed_by'])
+        return ticket
+
 
 # Views de autenticação
 class RegisterView(BaseView):
@@ -176,12 +208,12 @@ class RegisterView(BaseView):
     Endpoint para registrar novos usuários no sistema.
 
     ### Descrição:
-    Permite que usuários se cadastrem fornecendo informações como nome, email e senha.
+    Permite que usuários se cadastrem fornecendo informações como nome, e-mail e senha.
 
     ### Parâmetros:
     - `POST /apis/registrar/`: JSON contendo:
         - `username` (str): Nome de usuário.
-        - `email` (str): Email do usuário.
+        - `email` (str): E-mail do usuário.
         - `password` (str): Senha do usuário.
 
     ### Retornos:
@@ -271,7 +303,7 @@ class GetUsersView(BaseView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-class ChangeUserSectorView(BaseView):
+class ChangeUserChangeView(BaseView):
     """
     Endpoint para alterar o setor ou a situação de staff de um usuário.
 
@@ -382,19 +414,19 @@ class CreateTicketView(BaseView):
     - `POST /apis/chamados/criar/`: JSON contendo:
         - `title` (str): Título do chamado.
         - `description` (str): Descrição do chamado.
-        - `receiver` (int): ID do usuário que irá receber o chamado.
+        - `receivers` (str): IDs dos usuários que irão receber o chamado separados por vírgula.
 
     ### Retornos:
     - `201 CREATED`: Chamado criado e serializado pelo ´TicketSerializer´.
     - `401 UNAUTHORIZED`: Token de acesso não fornecido ou inválido.
     - `400 BAD REQUEST`: Informações do por que não foi possível criar o chamado.
     """
+
     def post(self, request):
         serializer = TicketSerializer(data=request.data, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class GetSentTicketsView(BaseView):
@@ -473,13 +505,13 @@ class CreateTicketResponseView(BaseView):
             raise ValidationError({'ticket_id': str(e)})
 
         custom_rule = lambda user: user.is_active
-        self.permissions_check(request.user, weight=3, allowed_users=[ticket.sender.pk, ticket.receiver.pk],
+        self.permissions_check(request.user, weight=3, allowed_users=self.get_allowed_users(ticket),
                                custom_rules=[custom_rule])
 
         # Validar conteúdo
         content = request.data.get('content')
         if not content:
-            raise ValidationError({"content": "O conteúdo fornecido não é válido."})
+            raise ValidationError({"content": "O conteúdo não é válido."})
 
         # Criar resposta
         ticket_response = TicketResponse.objects.create(
@@ -490,36 +522,53 @@ class CreateTicketResponseView(BaseView):
 
         # Retornar resposta criada
         return Response(
-            {TicketResponseSerializer(ticket_response).data},
+            TicketResponseSerializer(ticket_response).data,
             status=status.HTTP_201_CREATED
         )
 
 
-class GetTicketResponsesView(BaseView):
+class GetTicketResponsesView(APIView):
     """
     Endpoint para obter as respostas de um chamado.
 
     ### Autenticação:
-    - Este endpoint requer autenticação via **Bearer Token** no cabeçalho HTTP:
+    - Requer autenticação via **Bearer Token** no cabeçalho HTTP:
         ```
         Authorization: Bearer <access_token>
         ```
 
     ### Parâmetros:
-    - `GET /apis/chamados/respostas/`: JSON contendo:
+    - `GET /apis/chamados/respostas/`: Query params:
         - `ticket_id` (int): ID do chamado (Obrigatório).
 
     ### Retornos:
-    - `200 OK`: Respostas do chamado serializadas pelo `TicketResponseSerializer`.
+    - `200 OK`: Respostas do chamado serializadas.
     - `401 UNAUTHORIZED`: Token de acesso não fornecido ou inválido.
-    - `400 BAD REQUEST`: Erros adicionais relacionados à requisição.
+    - `400 BAD REQUEST`: Requisição inválida.
+    - `404 NOT FOUND`: Ticket não encontrado.
     """
     def get(self, request):
+        ticket_id = request.query_params.get('ticket_id')
+        if not ticket_id:
+            raise ValidationError({'ticket_id': 'Este campo é obrigatório.'})
+
         try:
-            ticket_id = int(request.data.get('ticket_id'))
-            ticket: Ticket = get_object_or_404(Ticket, id=ticket_id)
-        except Exception as e:
-            raise ValidationError({'ticket_id': str(e)})
+            ticket_id = int(ticket_id)
+        except ValueError:
+            raise ValidationError({'ticket_id': 'O ID do chamado deve ser um número inteiro.'})
+
+        # Tente buscar o ticket e pré-carregar as respostas
+        ticket = Ticket.objects.filter(id=ticket_id).prefetch_related(
+            Prefetch(
+                'responses',
+                queryset=TicketResponse.objects.select_related('responder')
+            )
+        ).first()
+
+        if not ticket:
+            raise NotFound({'ticket_id': 'Chamado não encontrado.'})
+
+        # Serializar as respostas
         responses = ticket.responses.all()
         serializer = TicketResponseSerializer(responses, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -557,22 +606,20 @@ class ChangeTicketStatusView(BaseView):
             ticket: Ticket = get_object_or_404(Ticket, id=ticket_id)
         except Exception as e:
             raise ValidationError({'ticket_id': str(e)})
+        self.permissions_check(self.request.user, weight=3, allowed_users=self.get_allowed_users(ticket))
 
-        # Validar permissões
-        custom_rule = lambda user: user.is_active
-        self.permissions_check(request.user, weight=3, allowed_users=[ticket.sender.pk, ticket.receiver.pk],
-                               custom_rules=[custom_rule])
-
-        # Obter nova situação
+        user = request.user
         new_status = request.data.get('new_status')
-        if not new_status:
-            return ValidationError({"new_status": "Status não fornecido."})
 
-        # Alterar situação
-        change_ticket_status(ticket, new_status)
+        # Validar entrada
+        if not new_status:
+            raise ValidationError({"new_status": "Status não fornecido."})
+
+        # Alterar situação e verificar permissão
+        self.change_ticket_status(ticket, user, new_status)
 
         return Response(
-            {"message": f"Status do chamado #{ticket_id} alterado para '{new_status}' com sucesso!"},
+            {"message": f"Status do chamado do '{user.username}' alterado para '{new_status}' com sucesso!"},
             status=status.HTTP_200_OK
         )
 
@@ -603,18 +650,21 @@ class DeleteTicketView(BaseView):
     - `ValidationError`: Se o usuário não tiver permissão ou se os dados fornecidos forem inválidos.
     """
     def post(self, request):
-        # Validar permissões
-        self.permissions_check(request.user, weight=3, error_message="Acesso restrito à super usuários.")
         try:
             ticket_id = int(request.data.get('ticket_id'))
             ticket: Ticket = get_object_or_404(Ticket, id=ticket_id)
         except Exception as e:
             raise ValidationError({"ticket_id": str(e)})
 
+        # Validar permissões
+        self.permissions_check(request.user, allowed_users=self.get_allowed_users(ticket, only_sender=True),
+                               weight=3,
+                               error_message="Acesso restrito à super usuários ou ao remetente do ticket.")
+
         # Deletar ticket
         ticket.delete()
         return Response(
-            {"message": f"Chamado #{ticket_id} deletado com sucesso!"},
+            {"message": f"Chamado #{ticket_id} removido com sucesso!"},
             status=status.HTTP_200_OK
         )
 

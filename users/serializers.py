@@ -3,6 +3,7 @@ from rest_framework import serializers
 from users.models import Sector
 
 
+
 class SectorSerializer(serializers.ModelSerializer):
     leader = serializers.SerializerMethodField()
 

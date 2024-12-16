@@ -8,7 +8,7 @@ from django.urls import path
 from .views import (
     RegisterView, LoginView, LogoutView, GetUsersView, CreateTicketView, CreateTicketResponseView,
     GetTicketResponsesView, GetSentTicketsView, GetReceivedTicketsView, ChangeTicketStatusView,
-    DeleteTicketView, GetSectorsView, CreateSectorView, DeleteSectorView, ChangeUserSectorView,
+    DeleteTicketView, GetSectorsView, CreateSectorView, DeleteSectorView, ChangeUserChangeView,
     ChangeSectorView
 )
 from rest_framework_simplejwt.views import TokenRefreshView
@@ -26,7 +26,7 @@ urlpatterns = [
     path('usuarios/', GetUsersView.as_view(), name='user-list'),  # Fetch a list of all users.
 
     # Users (POST)
-    path('usuarios/alterar/', ChangeUserSectorView.as_view(), name='user-change'),  # Modify user sector or is_staff.
+    path('usuarios/alterar/', ChangeUserChangeView.as_view(), name='user-change'),  # Modify user sector or is_staff.
 
     # Tickets (GET)
     path('chamados/enviados/', GetSentTicketsView.as_view(), name='sent-tickets'),  # Fetch tickets sent by the user.
