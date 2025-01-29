@@ -36,55 +36,49 @@ class RegisterSerializer(serializers.Serializer):
 
 
 class TicketSerializer(serializers.ModelSerializer):
-    sender = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+    sender = serializers.HiddenField(default=serializers.CurrentUserDefault())
     receivers = serializers.ListField(
         child=serializers.PrimaryKeyRelatedField(queryset=User.objects.all()),
         write_only=True,
         help_text="Lista de IDs dos usuários que receberão o ticket."
     )
+    last_status_changed_by = serializers.SerializerMethodField()
 
     class Meta:
         model = Ticket
-        fields = ['title', 'description', 'sender', 'receivers']
+        fields = [
+            'id', 'title', 'description', 'sender', 'receivers', 'status',
+            'created_at', 'last_status_changed_by'
+        ]
+        read_only_fields = ['id', 'created_at', 'last_status_changed_by', 'sender']
+
+    def get_last_status_changed_by(self, obj):
+        return UserSerializer(obj.last_status_changed_by).data if obj.last_status_changed_by else None
 
     def create(self, validated_data):
-        # Extraindo dados e removendo 'receivers' para lidar separadamente
         receivers = validated_data.pop('receivers')
-        request = self.context.get('request')
+        ticket = Ticket.objects.create(**validated_data)
 
-        # Criar o ticket com o remetente definido pelo usuário autenticado
-        ticket = Ticket.objects.create(sender=request.user, **validated_data)
-
-        # Criar as relações na tabela intermediária
         TicketReceiver.objects.bulk_create([
             TicketReceiver(ticket=ticket, user=receiver) for receiver in receivers
         ])
-
         return ticket
+
+    def validate(self, attrs):
+        if not attrs.get('receivers'):
+            raise serializers.ValidationError("Você deve incluir pelo menos um receptor.")
+        return attrs
 
 
 class TicketResponseSerializer(serializers.ModelSerializer):
     ticket = serializers.PrimaryKeyRelatedField(queryset=Ticket.objects.all())
     responder = UserSerializer(read_only=True)
+
     class Meta:
         model = TicketResponse
         fields = ['id', 'ticket', 'responder', 'content', 'created_at']
-        read_only_fields = ['id', 'ticket', 'responder', 'created_at']
+        read_only_fields = ['id', 'responder', 'created_at']
 
-
-class TicketReceiverSerializer(serializers.ModelSerializer):
-    user = UserSerializer(read_only=True)
-    class Meta:
-        model = TicketReceiver
-        fields = ['id', 'user', 'ticket', 'read', 'created_at', 'read_at']
-        read_only_fields = ['id', 'ticket', 'read', 'created_at', 'read_at']
-
-
-class TicketListSerializer(serializers.ModelSerializer):
-    responses = TicketResponseSerializer(many=True, read_only=True)
-    receivers = TicketReceiverSerializer(many=True, read_only=True)
-
-    class Meta:
-        model = Ticket
-        fields = ['id', 'title', 'description', 'sender', 'receivers', 'status', 'created_at', 'responses']
-        read_only_fields = ['id', 'sender', 'created_at']
+    def create(self, validated_data):
+        validated_data['responder'] = self.context['request'].user
+        return super().create(validated_data)

@@ -14,12 +14,15 @@ class Ticket(models.Model):
     ]
 
     title = models.CharField(max_length=255)
-    description = models.TextField()
+    description = models.TextField(max_length=500, blank=True, null=True)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default=STATUS_PENDING)
     sender = models.ForeignKey(User, related_name='sent_tickets', on_delete=models.CASCADE)
     receivers = models.ManyToManyField(User, through='TicketReceiver', related_name='received_tickets')
     created_at = models.DateTimeField(auto_now_add=True)
-    last_status_changed_by = models.ForeignKey(User, related_name='last_status_changed_by', on_delete=models.CASCADE)
+    last_status_changed_by = models.ForeignKey(User, related_name='last_status_changed_by',
+                                               on_delete=models.CASCADE,
+                                               null=True,
+                                               blank=True)
 
     @classmethod
     def get_status_display_dict(cls):
@@ -32,9 +35,7 @@ class Ticket(models.Model):
 class TicketReceiver(models.Model):
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    read = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
-    read_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"Chamado #{self.ticket.id} para {self.user.username} - Status: {self.ticket.get_status_display()}"
