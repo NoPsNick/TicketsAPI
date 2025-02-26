@@ -17,8 +17,7 @@ Para melhor visualização e utilização deste projeto utilize a aplicação fe
 Antes de começar, verifique se você atende aos seguintes requisitos:
 
 - Um sistema operacional **Windows**, **Linux** ou **macOS**.
-- **Python** na versão mais recente instalado. [Baixar Python](https://www.python.org/downloads/)  
-- Um sistema gerenciador de banco de dados (SGDB), preferencialmente **PostgreSQL**. [Baixar PostgreSQL](https://www.postgresql.org/download/)  
+- **Python** na versão mais recente instalado. [Baixar Python](https://www.python.org/downloads/)
 
 ---
 
