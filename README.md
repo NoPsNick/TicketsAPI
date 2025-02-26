@@ -74,7 +74,7 @@ python manage.py runserver
 
 Acesse a API em **[http://localhost:8000](http://localhost:8000)**.
 
-Caso gostaria de usar esta API com UIs, sendo mais fácil ver suas funcionalides, basta ir em meu projeto feito em C# em **[Chamados API](https://github.com/NoPsNick/ChamadosAPI)**.
+Utilize esta API através de UIs em **[Chamados API](https://github.com/NoPsNick/ChamadosAPI)**.
 
 ---
 
