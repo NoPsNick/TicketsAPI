@@ -9,7 +9,7 @@ from .views import (
     RegisterView, LoginView, LogoutView, GetUsersView, CreateTicketView, CreateTicketResponseView,
     GetTicketResponsesView, GetSentTicketsView, GetReceivedTicketsView, ChangeTicketStatusView,
     DeleteTicketView, GetSectorsView, CreateSectorView, DeleteSectorView, ChangeUserView,
-    ChangeSectorView, GetUserView, GetSectorView
+    ChangeSectorView, GetUserView, GetSectorView, SearchTicket
 )
 from rest_framework_simplejwt.views import TokenRefreshView
 
@@ -24,12 +24,13 @@ urlpatterns = [
 
     # Users (GET)
     path('usuarios/', GetUsersView.as_view(), name='user-list'),  # Fetch a list of all users.
-    path('usuarios/<str:username>/', GetUserView.as_view(), name='user'),  # Fetch a specific user.
+    path('usuarios/buscar/', GetUserView.as_view(), name='user'),  # Fetch a specific user.
 
     # Users (POST)
     path('usuarios/alterar/<int:user_id>/', ChangeUserView.as_view(), name='user-change'),  # Modify user sector or is_staff.
 
     # Tickets (GET)
+    path('chamados/buscar/', SearchTicket.as_view(), name='search-ticket'), # Search the tickets by user or the ticket id.
     path('chamados/enviados/', GetSentTicketsView.as_view(), name='sent-tickets'),  # Fetch tickets sent by the user.
     path('chamados/recebidos/', GetReceivedTicketsView.as_view(), name='received-tickets'),  # Fetch tickets received by the user.
     path('chamados/respostas/<int:ticket_id>/', GetTicketResponsesView.as_view(), name='ticket-responses'),  # Fetch responses for a ticket.
@@ -42,10 +43,10 @@ urlpatterns = [
 
     # Sectors (GET)
     path('setores/', GetSectorsView.as_view(), name='sector-list'),  # Fetch a list of all sectors.
+    path('setores/<int:sector_id>/', GetSectorView.as_view(), name='sector-get'),
 
     # Sectors (POST)
     path('setores/criar/', CreateSectorView.as_view(), name='sector-create'),  # Create a new sector (staff only).
-    path('setores/<int:sector_id>/', GetSectorView.as_view(), name='sector-get'),
     path('setores/remover/<int:sector_id>/', DeleteSectorView.as_view(), name='sector-delete'),  # Delete a sector (admin only).
     path('setores/alterar/<int:sector_id>/', ChangeSectorView.as_view(), name='sector-change'),  # Modify sector details (staff only).
 ]

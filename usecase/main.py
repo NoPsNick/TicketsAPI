@@ -93,7 +93,7 @@ class Manager(BaseAPI):
         :return: Usuário.
         """
         self._set_auth_header(access_token)
-        return self._request("GET", f"usuarios/{username}/")
+        return self._request("GET", f"usuarios/buscar/?username={username}")
 
     def change_user(self, access_token, user_id: int, new_sector_id: int = None, is_staff: bool = None
                     ) -> dict[str, str]:
@@ -422,11 +422,12 @@ if __name__ == "__main__":
     print(user_adm.get_users_list())
     print(user_adm.get_sectors())
     print(user_adm.get_sent_tickets())
-    print(user_adm.get_received_tickets())
+    print(user_adm.get_received_tickets(), "*********")
+    print(user_adm.get_tickets_responses(1))
+    print(user_adm.change_ticket_status(1, "pendente"))
 
     normal_user = User()
     print(normal_user.login(username='normal', password='abcd1234'))
     print(normal_user.get_users_list())
     print(normal_user.get_received_tickets())
     print(normal_user.get_sent_tickets())
-    print(normal_user.get_tickets_responses(1))

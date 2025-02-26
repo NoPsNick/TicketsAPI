@@ -29,6 +29,24 @@ class BaseView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    def get_ticket(self, ticket_id):
+        ticket = Ticket.objects.filter(id=ticket_id).select_related(
+            'sender', 'last_status_changed_by'
+        ).prefetch_related('receivers').first()
+
+        if not ticket:
+            return {"error": "Chamado não encontrado"}
+
+        return ticket
+
+    @staticmethod
+    def get_user_tickets(user_id):
+        tickets = Ticket.objects.filter(sender_id=user_id).select_related(
+            'sender', 'last_status_changed_by'
+        ).prefetch_related('receivers')
+
+        return tickets
+
     @staticmethod
     def get_allowed_users(ticket, only_sender=False):
         """
@@ -36,6 +54,7 @@ class BaseView(APIView):
 
         ### Parâmetros:
         - `ticket`: Instância do ticket.
+        - `only_sender`: Apenas quem enviou o ticket.
 
         ### Retornos:
         - Lista de IDs de usuários permitidos.
@@ -49,7 +68,7 @@ class BaseView(APIView):
         return allowed_users
 
     @staticmethod
-    def get_user_tickets(user, role):
+    def get_user_tickets_by_type(user, role):
         """
         Retorna os tickets relacionados a um usuário, seja como remetente ou destinatário.
 
@@ -60,10 +79,6 @@ class BaseView(APIView):
         ### Retornos:
         - Queryset de tickets filtrados conforme o papel do usuário.
         """
-        # Tickets para staff ou superusuários (acesso completo)
-        if user.is_staff or user.is_superuser:
-            return Ticket.objects.all().select_related('sender', 'last_status_changed_by'
-                                                       ).prefetch_related('receivers', 'responses')
 
         # Tickets enviados pelo usuário
         if role == "sent":
@@ -154,7 +169,8 @@ class BaseView(APIView):
             try:
                 return User.objects.get(id=leader_id)
             except User.DoesNotExist:
-                raise ValidationError({"leader_id": "Usuário líder informado não existe."})
+                raise ValidationError({"leader_id": "Usuário líder informado não existe."},
+                                      code=status.HTTP_404_NOT_FOUND)
         return None
 
     def get_sector_infos_from_request(self, request, is_update=False) -> dict:
@@ -164,9 +180,9 @@ class BaseView(APIView):
         Parâmetro is_update:
         - Se True, indica que estamos atualizando o setor, e a lógica de tratamento do 'leader' será diferente.
         """
-        name = request.data.get('name')
-        description = request.data.get('description')
-        leader_id = request.data.get('leader_id')
+        name = request.data.get('name') or request.data.get('sector_name')
+        description = request.data.get('description') or request.data.get('sector_description')
+        leader_id = request.data.get('leader_id') or request.data.get('sector_leader_id')
 
         leader = self.get_leader_from_request(leader_id, is_update)
 
@@ -186,19 +202,21 @@ class BaseView(APIView):
         """
         status_dict = Ticket.get_status_display_dict()
 
+        formated_new_status = new_status.lower()
+
         # Verificar se o novo status é válido
-        if new_status not in status_dict:
+        if formated_new_status not in status_dict:
             valid_statuses = ", ".join(status_dict.keys())
             raise ValidationError({
-                "status": f"'{new_status}' não é um status válido. Status válidos: {valid_statuses}."
-            })
+                "status": f"'{formated_new_status}' não é um status válido. Status válidos: {valid_statuses}."
+            }, code=status.HTTP_400_BAD_REQUEST)
 
         # Verificar se o status já está atualizado
-        if ticket.status == status_dict[new_status]:
+        if ticket.status == status_dict[formated_new_status]:
             return ticket
 
         # Atualizar o status do chamado
-        ticket.status = status_dict[new_status]
+        ticket.status = status_dict[formated_new_status]
         ticket.last_status_changed_by = user
         ticket.save(update_fields=['status', 'last_status_changed_by'])
         return ticket
@@ -317,14 +335,26 @@ class GetUserView(BaseView):
 
     ### Parâmetros:
     - `GET /apis/usuarios/<username>/`
+        - `user_id` Para buscar o usuário através de seu ID, este será prioritizado caso envie ambos.
+        - `username` Para buscar o usuário através de seu username, o user_id será prioritizado caso envie ambos.
 
     ### Retornos:
     - `200 OK`: Usuário serializado pelo `UserSerializer`.
     - `401 UNAUTHORIZED`: Token de acesso não fornecido ou inválido.
     - `400 BAD REQUEST`: Erros adicionais relacionados à requisição.
     """
-    def get(self, request, username):
-        user = User.objects.get(username=username)
+    def get(self, request):
+        user_id = request.query_params.get("user_id")
+        username = request.query_params.get("username")
+
+        if not user_id and not username:
+            return Response(
+                {"error": "Parâmetro 'user_id' ou 'username' é obrigatório."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        filter_kwargs = {"id": user_id} if user_id else {"username": username}
+        user = get_object_or_404(User, **filter_kwargs)
         serializer = UserSerializer(user)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -341,12 +371,13 @@ class ChangeUserView(BaseView):
 
     ### Descrição:
     - Usuários staff podem alterar o setor de outros usuários.
-    - Apenas superusuários podem alterar o status de staff.
+    - Apenas superusuários podem alterar o status de staff e desativar/ativar contas.
 
     ### Parâmetros:
     - `POST /apis/usuarios/alterar/<user_id>/`: JSON contendo:
-        - `new_sector_id` (int): ID do novo setor. (Opcional, requer permissão de staff, 0 remove o setor)
+        - `new_sector_id` (int): ID do novo setor. (Opcional, requer permissão de staff, −1 remove o setor)
         - `is_staff` (bool): Define se o usuário deve ser staff ou não. (Opcional, requer permissão de superusuário)
+        - `new_active` (bool): Define se o usuário deve estar ativo ou não. (Opcional, requer permissão de superusuário)
 
     ### Retornos:
     - `200 OK`: Alteração bem-sucedida.
@@ -359,70 +390,88 @@ class ChangeUserView(BaseView):
 
     def post(self, request, user_id):
         user = get_object_or_404(User, id=user_id)
+        fields_to_update = []
 
         # Processa alterações solicitadas
-        sector_message = self.handle_sector_change(request, user)
-        staff_message = self.handle_staff_status_change(request, user)
+        sector_message = self.handle_sector_change(request, user, fields_to_update)
+        staff_message = self.handle_staff_status_change(request, user, fields_to_update)
+        active_message = self.handle_active_change(request, user, fields_to_update)
 
-        # Monta resposta
+        # Salva o usuário apenas se houve mudanças
+        if fields_to_update:
+            user.save(update_fields=fields_to_update)
+
+        # Monta resposta filtrando mensagens None
         response_message = {
             "sector_message": sector_message,
             "staff_message": staff_message,
+            "active_message": active_message,
         }
         return Response({key: msg for key, msg in response_message.items() if msg}, status=status.HTTP_200_OK)
 
-    def handle_sector_change(self, request, user):
-        """
-        Processa a alteração de setor para o usuário, se solicitado.
-        """
-        try:
-            new_sector_id = int(request.data.get('new_sector_id'))
-        except ValueError: # Caso o setor seja None.
+    def handle_active_change(self, request, user, fields_to_update):
+        """ Processa a ativação/desativação do usuário. """
+        new_active = request.data.get('new_active')
+        if new_active is None:
             return None
 
-        self.permissions_check(request.user, weight=1)
-        # Tenta buscar o novo setor
-        new_sector = None
-        if isinstance(new_sector_id, int) and new_sector_id == 0:
-            user.sector = new_sector
-            return(
-                f"O setor do usuário {user.username} #{user.id} foi removido com sucesso."
-            )
-        elif isinstance(new_sector_id, int) and new_sector_id < 0:
-            try:
-                new_sector = Sector.objects.get(id=new_sector_id)
-            except (ValueError, Sector.DoesNotExist):
-                raise ValidationError({"new_sector_id": "O ID do setor fornecido não é válido ou não existe."})
+        self.permissions_check(request.user, weight=3, error_message="Acesso restrito a superusuários.")
 
-        # Atualiza o setor
+        # Converte corretamente para booleano
+        new_active_bool = str(new_active).lower() in ["true", "1"]
+        if user.is_active != new_active_bool:
+            user.is_active = new_active_bool
+            fields_to_update.append("is_active")
+            return f"O usuário #{user.id} agora está {'ativo' if new_active_bool else 'desativado'}."
+        return None
+
+    def handle_sector_change(self, request, user, fields_to_update):
+        """ Processa a alteração de setor do usuário. """
+        try:
+            new_sector_id = int(request.data.get('new_sector_id'))
+        except (ValueError, TypeError):
+            return None  # Retorna None caso o setor não tenha sido passado
+
+        self.permissions_check(request.user, weight=1)
+
+        # Remover setor se for -1
+        if new_sector_id == -1 and user.sector is not None:
+            old_sector = user.sector.id
+            user.sector = None
+            fields_to_update.append("sector")
+            return f"O setor #{old_sector} do usuário {user.username} #{user.id} foi removido com sucesso."
+
+        # Verifica se o setor fornecido é válido
+        try:
+            new_sector = Sector.objects.get(id=new_sector_id)
+        except Sector.DoesNotExist:
+            raise ValidationError({"new_sector_id": "O ID do setor fornecido não foi encontrado"},
+                                  code=status.HTTP_404_NOT_FOUND)
+
+        # Atualiza o setor se necessário
         if user.sector != new_sector:
             user.sector = new_sector
-            user.save(update_fields=["sector"])
-            return (
-                f"O setor do usuário {user.username} #{user.id} foi atualizado para '{new_sector.sector_name}'."
-            )
-        return (
-            f"O setor do usuário {user.username} #{user.id} já é '{new_sector.sector_name}'."
-            if new_sector else f"O setor do usuário {user.username} #{user.id} já está vazio."
-        )
+            fields_to_update.append("sector")
+            return f"O setor do usuário {user.username} #{user.id} foi atualizado para '{new_sector.sector_name}'."
 
-    def handle_staff_status_change(self, request, user):
-        """
-        Processa a alteração da situação de staff para o usuário, se solicitado.
-        """
+        return f"O setor do usuário {user.username} #{user.id} já é '{new_sector.sector_name}'."
+
+    def handle_staff_status_change(self, request, user, fields_to_update):
+        """ Processa a alteração do status de staff do usuário. """
         is_staff = request.data.get('is_staff')
         if is_staff is None:
             return None
 
-        self.permissions_check(request.user, weight=3, error_message="Acesso restrito à super usuários.")
+        self.permissions_check(request.user, weight=3, error_message="Acesso restrito a superusuários.")
 
-        # Atualiza a situação de staff
         is_staff = bool(is_staff)
         if user.is_staff != is_staff:
             user.is_staff = is_staff
-            user.save(update_fields=["is_staff"])
+            fields_to_update.append("is_staff")
             return f"O status de staff do usuário #{user.id} foi atualizado para {'habilitado' if is_staff else 'desabilitado'}."
+
         return f"O status de staff do usuário #{user.id} já está {'habilitado' if is_staff else 'desabilitado'}."
+
 
 
 # Views de Tickets
@@ -440,7 +489,7 @@ class CreateTicketView(BaseView):
     - `POST /apis/chamados/criar/`: JSON contendo:
         - `title` (str): Título do chamado.
         - `description` (str): Descrição do chamado.
-        - `receivers` (str): IDs dos usuários que irão receber o chamado separados por vírgula.
+        - `receivers` (int): IDs dos usuários que irão receber o chamado separados por vírgula.
 
     ### Retornos:
     - `201 CREATED`: Chamado criado e serializado pelo ´TicketSerializer´.
@@ -474,7 +523,7 @@ class GetSentTicketsView(BaseView):
     - `400 BAD REQUEST`: Erros adicionais relacionados à requisição.
     """
     def get(self, request):
-        tickets = self.get_user_tickets(request.user, "sent")
+        tickets = self.get_user_tickets_by_type(request.user, "sent")
         serializer = TicketSerializer(tickets, many=True)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -498,9 +547,78 @@ class GetReceivedTicketsView(BaseView):
     - `400 BAD REQUEST`: Erros adicionais relacionados à requisição.
     """
     def get(self, request):
-        tickets = self.get_user_tickets(request.user, "received")
+        tickets = self.get_user_tickets_by_type(request.user, "received")
         serializer = TicketSerializer(tickets, many=True)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class SearchTicket(BaseView):
+    """
+    Endpoint para obter chamados em específico através de seu ID ou usuário no sistema.
+
+    ### Autenticação:
+    - Este endpoint requer autenticação via **Bearer Token** no cabeçalho HTTP:
+        ```
+        Authorization: Bearer <access_token>
+        ```
+
+    ### Parâmetros:
+    - `GET /apis/chamados/buscar/`
+        - `user_id` Para pegar todos os chamados de um usuário.
+        - `ticket_id` Para pegar um chamado em específico.
+
+    ### Retornos:
+    - `200 OK`: Chamado serializado pelo `TicketSerializer`.
+    - `401 UNAUTHORIZED`: Token de acesso não fornecido ou inválido.
+    - `400 BAD REQUEST`: Erros adicionais relacionados à requisição.
+    """
+    def get(self, request):
+
+        user_id = request.query_params.get("user_id")
+        ticket_id = request.query_params.get("ticket_id")
+
+        # Converte os valores para inteiros (se existirem)
+        try:
+            user_id = int(user_id) if user_id else None
+            ticket_id = int(ticket_id) if ticket_id else None
+
+        except ValueError:
+            return Response({"error": "Parâmetros inválidos"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Caso ambos sejam fornecidos, filtramos pelo user_id e ticket_id
+        if user_id and ticket_id:
+            try:
+                ticket = Ticket.objects.filter(id=ticket_id, sender_id=user_id).select_related(
+                    'sender', 'last_status_changed_by'
+                ).prefetch_related('receivers').first()
+            except Ticket.DoesNotExist:
+                return Response({"error": "Chamado específico do usuário não encontrado."},
+                                status=status.HTTP_404_NOT_FOUND)
+            self.permissions_check(request.user, allowed_users=self.get_allowed_users(ticket))
+
+            serializer = TicketSerializer(ticket)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # Se apenas o ticket_id for fornecido
+        if ticket_id:
+            ticket_from_id = self.get_ticket(ticket_id)
+            self.permissions_check(request.user, allowed_users = self.get_allowed_users(ticket_from_id))
+
+            serializer_ticket = TicketSerializer(ticket_from_id)
+            return Response(serializer_ticket.data, status=status.HTTP_200_OK)
+
+        # Se apenas o user_id for fornecido
+        if user_id:
+            tickets = self.get_user_tickets(user_id)
+            for tic in tickets:
+                self.permissions_check(request.user, allowed_users=self.get_allowed_users(tic))
+
+            serializer_tickets = TicketSerializer(tickets, many=True)
+            return Response(serializer_tickets.data, status=status.HTTP_200_OK)
+
+        # Caso nenhum parâmetro seja fornecido
+        return Response({"error": "É necessário informar a chave user_id ou ticket_id"},
+                        status=status.HTTP_400_BAD_REQUEST)
 
 
 class CreateTicketResponseView(BaseView):
@@ -522,10 +640,11 @@ class CreateTicketResponseView(BaseView):
     - `401 UNAUTHORIZED`: Token de acesso não fornecido ou inválido.
     - `400 BAD REQUEST`: Informações do porquê não foi possível criar o chamado.
     """
+
     def post(self, request, ticket_id):
         ticket = get_object_or_404(Ticket, id=ticket_id)
 
-        # Verificar permissões (se necessário)
+        # Verificar permissões
         custom_rule = lambda user: user.is_active
         self.permissions_check(
             request.user,
@@ -534,23 +653,20 @@ class CreateTicketResponseView(BaseView):
             custom_rules=[custom_rule]
         )
 
-        # Inicializar o serializer com os dados da requisição
         serializer = TicketResponseSerializer(
             data=request.data,
             context={'request': request}
         )
 
-        # Validar dados
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.is_valid(raise_exception=True)
 
-        # Salvar o objeto
+        # Passamos o ticket no save()
         serializer.save(ticket=ticket, responder=request.user)
 
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
-class GetTicketResponsesView(APIView):
+class GetTicketResponsesView(BaseView):
     """
     Endpoint para obter as respostas de um chamado.
 
@@ -579,9 +695,13 @@ class GetTicketResponsesView(APIView):
                 )
             ).first()
         except ValueError:
-            raise ValidationError({'ticket_id': 'O ID do chamado deve ser um número inteiro.'})
+            raise ValidationError({'ticket_id': 'O ID do chamado deve ser um número inteiro.'},
+                                  status.HTTP_400_BAD_REQUEST)
         except Ticket.DoesNotExist:
-            raise ValidationError({'ticket_id': 'Não foi possível encontrar o chamado.'})
+            raise ValidationError({'ticket_id': 'Não foi possível encontrar o chamado.'},
+                                  status.HTTP_404_NOT_FOUND)
+        allowed_users = self.get_allowed_users(ticket, only_sender=True)
+        self.permissions_check(request.user, allowed_users=allowed_users)
 
         # Serializar as respostas
         responses = ticket.responses.all()
@@ -624,12 +744,13 @@ class ChangeTicketStatusView(BaseView):
         user = request.user
         new_status = request.data.get('new_status')
 
+
         # Validar entrada
         if not new_status:
-            raise ValidationError({"new_status": "Status não fornecido."})
+            raise ValidationError({"new_status": "Status não fornecido."}, code=status.HTTP_400_BAD_REQUEST)
 
         # Alterar situação e verificar permissão
-        self.change_ticket_status(ticket, user, new_status)
+        ticket = self.change_ticket_status(ticket, user, new_status)
 
         return Response(
             {"message": f"Status do chamado #{ticket_id} alterado para '{new_status}' com sucesso!"},
@@ -639,7 +760,7 @@ class ChangeTicketStatusView(BaseView):
 
 class DeleteTicketView(BaseView):
     """
-    Endpoint para deletar de um chamado.
+    Endpoint para deletar um chamado.
 
     ### Autenticação:
     - Este endpoint requer autenticação via **Bearer Token** no cabeçalho HTTP:
@@ -685,7 +806,7 @@ class DeleteTicketView(BaseView):
 
 class GetSectorView(BaseView):
     """
-    Endpoint para obter um usuário em específico através de seu username no sistema.
+    Endpoint para obter um setor em específico através de seu ID no sistema.
 
     ### Autenticação:
     - Este endpoint requer autenticação via **Bearer Token** no cabeçalho HTTP:
@@ -738,7 +859,6 @@ class CreateSectorView(BaseView):
 
         # Obter dados do request (sem remover o líder, pois estamos criando)
         data_from_request = self.get_sector_infos_from_request(request, is_update=False)
-
         if not data_from_request['sector_name']:
             raise ValidationError({'name': 'Nome do setor não fornecido ou inválido.'})
 
@@ -860,7 +980,7 @@ class DeleteSectorView(BaseView):
     ### Erros:
     - `ValidationError`: Se o usuário não tiver permissão ou se os dados fornecidos forem inválidos.
     """
-    def post(self, request, sector_id):
+    def delete(self, request, sector_id):
         self.permissions_check(request.user, weight=3, error_message="Acesso restrito à super usuários.")
         try:
             sector: Sector = get_object_or_404(Sector, id=sector_id)

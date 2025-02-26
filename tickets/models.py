@@ -29,7 +29,7 @@ class Ticket(models.Model):
         """
         Retorna um dicionário para mapear os status de exibição para valores internos.
         """
-        return {display: value for value, display in cls.STATUS_CHOICES}
+        return {display.lower(): value for value, display in cls.STATUS_CHOICES}
 
 
 class TicketReceiver(models.Model):
